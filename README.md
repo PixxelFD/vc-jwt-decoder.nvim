@@ -8,9 +8,8 @@ This is the Neovim counterpart of the [VC JWT Decoder](https://gitlab.com/riphix
 
 - `*.jwt` files open with the decoded view in a split.
 - Decode the whole buffer, a selection, an argument, or the token under the cursor. A cursor or selection can sit in a log line, a `Bearer …` header or a quoted string.
-- Results open in a read-only `json` buffer, folded by indent. Close it with `q`.
-- The winbar shows the signature status: ✓ verified, ✗ invalid, ? no key found. It shows one for each enveloped VC too.
-- `iat`, `nbf`, `exp` and `auth_time` are annotated with UTC dates, and expired or not-yet-valid tokens are flagged.
+- Results open beside the current window in the CLI's own layout: a panel each for header and payload, the signature status with key details (`✓ Signature verified (RS256 · RSA · 2048-bit · SHA-256)`) in the panel title, and every enveloped VC decoded the same way. If a check fails, its steps are listed below the panels.
+- The view is a normal read-only buffer with the CLI's colors as highlights, on your colorscheme's background, so you can search and yank in it. The panels are laid out for the window width when they open; after resizing, press `r` to lay them out again. Close it with `q`.
 - Runs asynchronously, so key resolution over the network doesn't block the editor.
 
 ## Requirements
@@ -67,7 +66,6 @@ require("vc-jwt-decoder").setup({
   verify = true,       -- verify signatures (may fetch DID documents / JWKS)
   auto_open = true,    -- decode *.jwt files when opened
   split = "vertical",  -- "vertical" | "horizontal" | "tab"
-  timestamps = true,   -- annotate iat/nbf/exp with dates
 })
 ```
 

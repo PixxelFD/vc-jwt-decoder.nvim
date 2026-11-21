@@ -39,11 +39,19 @@ vim.api.nvim_create_autocmd("BufReadPost", {
   group = vim.api.nvim_create_augroup("vc-jwt-decoder", { clear = true }),
   pattern = "*.jwt",
   callback = function(ev)
-    local jwt = require("vc-jwt-decoder")
-    if jwt.config.auto_open and vim.api.nvim_buf_line_count(ev.buf) > 0 then
-      vim.api.nvim_buf_call(ev.buf, function()
-        jwt.decode_range(1, vim.api.nvim_buf_line_count(ev.buf))
-      end)
+    local function decode()
+      local jwt = require("vc-jwt-decoder")
+      if jwt.config.auto_open and vim.api.nvim_buf_is_valid(ev.buf) then
+        vim.api.nvim_buf_call(ev.buf, function()
+          jwt.decode_range(1, vim.api.nvim_buf_line_count(ev.buf))
+        end)
+      end
     end
+    if vim.v.vim_did_enter == 1 then
+      return decode()
+    end
+    -- `nvim token.jwt`: wait until the screen size is known and startup windows (e.g. a
+    -- file explorer) are open, so the panels are laid out for the final width.
+    vim.api.nvim_create_autocmd("VimEnter", { once = true, callback = vim.schedule_wrap(decode) })
   end,
 })

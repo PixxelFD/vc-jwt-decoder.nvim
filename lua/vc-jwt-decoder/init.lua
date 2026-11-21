@@ -3,7 +3,6 @@
 ---@field verify boolean     Verify signatures (resolves did:web / did:key / OIDC keys over the network)
 ---@field auto_open boolean  Decode automatically when a *.jwt file is opened
 ---@field split "vertical"|"horizontal"|"tab"
----@field timestamps boolean Show iat/nbf/exp as human-readable dates next to the claims
 
 local M = {}
 
@@ -13,7 +12,6 @@ M.defaults = {
   verify = true,
   auto_open = true,
   split = "vertical",
-  timestamps = true,
 }
 
 ---@type VcJwtDecoderConfig
@@ -21,6 +19,7 @@ M.config = vim.deepcopy(M.defaults)
 
 local ns = vim.api.nvim_create_namespace("vc-jwt-decoder")
 local result_buf ---@type integer|nil
+local last_request ---@type { token: string, opts: table }|nil  for `r` (render again)
 
 --- Resolve the decoder command, preferring an installed CLI over uvx.
 ---@return string[]|nil cmd, string|nil err
@@ -47,65 +46,180 @@ function M.clean_token(s)
   return s
 end
 
-local function sig_status(sig, verified_requested)
-  if not verified_requested or type(sig) ~= "table" then
-    return "signature: not checked", "Comment"
-  elseif sig.verified == true then
-    return "✓ signature verified", "DiagnosticOk"
-  elseif sig.verified == false then
-    return "✗ signature INVALID", "DiagnosticError"
-  end
-  return "? signature not verified (no key found)", "DiagnosticWarn"
-end
+-- [[ ANSI colors ]]
+-- The CLI prints colored panels. They are shown as plain text with highlights (not in a
+-- terminal buffer), so resizing the window never re-wraps them. Background colors are
+-- dropped, so the colorscheme's background shows through.
 
-local function winbar_text(result, verify)
-  if result.error then
-    return "%#DiagnosticError# JWT: " .. result.error:gsub("%%", "%%%%")
-  end
-  local text, hl = sig_status(result.signature, verify)
-  local parts = { ("%%#%s# %s"):format(hl, text) }
-  for i, vc in ipairs(result.enveloped_vcs or {}) do
-    local t, h = sig_status(vc.signature, verify)
-    parts[#parts + 1] = ("%%#%s#VC[%d]: %s"):format(h, i - 1, t)
-  end
-  if result.is_vp then
-    parts[#parts + 1] = "%#Title#VP"
-  end
-  return table.concat(parts, "%#Normal#  │  ")
-end
+local xterm16 = {
+  "#000000", "#cd0000", "#00cd00", "#cdcd00", "#0000ee", "#cd00cd", "#00cdcd", "#e5e5e5",
+  "#7f7f7f", "#ff0000", "#00ff00", "#ffff00", "#5c5cff", "#ff00ff", "#00ffff", "#ffffff",
+}
 
-local function annotate_timestamps(buf, lines)
-  for i, line in ipairs(lines) do
-    local key, num = line:match('^%s*"(%a+)":%s*(%d+),?$')
-    if num and (key == "iat" or key == "nbf" or key == "exp" or key == "auth_time") then
-      local ts = tonumber(num)
-      local label = os.date("!%Y-%m-%d %H:%M:%S UTC", ts)
-      local hl = "Comment"
-      if key == "exp" and ts < os.time() then
-        label, hl = label .. " (expired)", "DiagnosticError"
-      elseif key == "nbf" and ts > os.time() then
-        label, hl = label .. " (not yet valid)", "DiagnosticWarn"
-      end
-      vim.api.nvim_buf_set_extmark(buf, ns, i - 1, 0, { virt_text = { { "  " .. label, hl } } })
+--- Color of a 256-color palette index; 0-15 follow the colorscheme's terminal colors.
+local function palette_color(n)
+  if n < 16 then
+    return vim.g["terminal_color_" .. n] or xterm16[n + 1]
+  elseif n < 232 then
+    local function level(v)
+      return v == 0 and 0 or 55 + v * 40
     end
+    n = n - 16
+    return ("#%02x%02x%02x"):format(level(math.floor(n / 36)), level(math.floor(n / 6) % 6), level(n % 6))
+  end
+  local grey = 8 + (n - 232) * 10
+  return ("#%02x%02x%02x"):format(grey, grey, grey)
+end
+
+--- Apply one SGR sequence ("1;38;2;r;g;b") to the style state.
+local function apply_sgr(params, st)
+  local list = params == "" and { "0" } or vim.split(params, ";", { plain = true })
+  local i = 1
+  while i <= #list do
+    local c = tonumber(list[i]) or 0
+    if c == 0 then
+      st.fg, st.bold, st.dim, st.italic, st.underline = nil, nil, nil, nil, nil
+    elseif c == 1 then
+      st.bold = true
+    elseif c == 2 then
+      st.dim = true
+    elseif c == 3 then
+      st.italic = true
+    elseif c == 4 then
+      st.underline = true
+    elseif c == 22 then
+      st.bold, st.dim = nil, nil
+    elseif c == 23 then
+      st.italic = nil
+    elseif c == 24 then
+      st.underline = nil
+    elseif c == 39 then
+      st.fg = nil
+    elseif c >= 30 and c <= 37 then
+      st.fg = palette_color(c - 30)
+    elseif c >= 90 and c <= 97 then
+      st.fg = palette_color(c - 90 + 8)
+    elseif c == 38 or c == 48 then -- extended color; backgrounds (48) are skipped
+      if list[i + 1] == "5" then
+        if c == 38 then
+          st.fg = palette_color(tonumber(list[i + 2]) or 0)
+        end
+        i = i + 2
+      elseif list[i + 1] == "2" then
+        if c == 38 then
+          st.fg = ("#%02x%02x%02x"):format(tonumber(list[i + 2]) or 0, tonumber(list[i + 3]) or 0, tonumber(list[i + 4]) or 0)
+        end
+        i = i + 4
+      end
+    end
+    i = i + 1
   end
 end
 
-local function open_window(title)
+local groups = {} ---@type table<string, vim.api.keyset.highlight>
+
+--- Highlight group for a style, created on first use.
+local function style_group(st)
+  if not (st.fg or st.bold or st.dim or st.italic or st.underline) then
+    return nil
+  end
+  local name = ("VcJwtDecoder_%s%s%s%s%s"):format(
+    st.fg and st.fg:sub(2) or "",
+    st.bold and "b" or "",
+    st.dim and "d" or "",
+    st.italic and "i" or "",
+    st.underline and "u" or ""
+  )
+  if not groups[name] then
+    local spec = { fg = st.fg, bold = st.bold, italic = st.italic, underline = st.underline }
+    if st.dim and not st.fg then
+      spec.fg = vim.api.nvim_get_hl(0, { name = "Comment", link = false }).fg
+    end
+    groups[name] = spec
+    vim.api.nvim_set_hl(0, name, spec)
+  end
+  return name
+end
+
+-- `:colorscheme` clears all highlight groups; define ours again.
+vim.api.nvim_create_autocmd("ColorScheme", {
+  group = vim.api.nvim_create_augroup("vc-jwt-decoder-colors", { clear = true }),
+  callback = function()
+    for name, spec in pairs(groups) do
+      vim.api.nvim_set_hl(0, name, spec)
+    end
+  end,
+})
+
+--- Split ANSI-colored text into plain lines and highlight ranges.
+---@param text string
+---@return string[] lines
+---@return { [1]: integer, [2]: integer, [3]: integer, [4]: string }[] highlights row, start_col, end_col (0-based bytes), group
+function M.parse_ansi(text)
+  local lines, highlights, st = {}, {}, {}
+  text = text:gsub("\r", ""):gsub("\n$", "")
+  for row, raw in ipairs(vim.split(text, "\n", { plain = true })) do
+    local parts, len, pos = {}, 0, 1
+    while true do
+      local s, e, params = raw:find("\27%[([%d;]*)m", pos)
+      local chunk = raw:sub(pos, (s or 0) - 1)
+      if chunk ~= "" then
+        local group = style_group(st)
+        if group then
+          highlights[#highlights + 1] = { row - 1, len, len + #chunk, group }
+        end
+        parts[#parts + 1] = chunk
+        len = len + #chunk
+      end
+      if not s then
+        break
+      end
+      apply_sgr(params, st)
+      pos = e + 1
+    end
+    lines[row] = table.concat(parts)
+  end
+  return lines, highlights
+end
+
+-- [[ Result window ]]
+
+--- Width the result window has (or will get), so the CLI can fit its panels to it.
+local function result_width()
+  local win = result_buf and vim.fn.bufwinid(result_buf) or -1
+  local width
+  if win ~= -1 then
+    width = vim.api.nvim_win_get_width(win)
+  elseif M.config.split == "tab" then
+    width = vim.o.columns
+  elseif M.config.split == "horizontal" then
+    width = vim.api.nvim_win_get_width(0)
+  else
+    width = math.floor(vim.api.nvim_win_get_width(0) / 2)
+  end
+  return math.max(width - 1, 40)
+end
+
+--- Focus the result window, opening a split with a new buffer if there is none.
+local function open_window()
   local win = result_buf and vim.fn.bufwinid(result_buf) or -1
   if win ~= -1 then
     vim.api.nvim_set_current_win(win)
     return result_buf, win
   end
   local split = M.config.split
-  vim.cmd(split == "tab" and "tabnew" or split == "horizontal" and "rightbelow new" or "rightbelow vnew")
-  local buf = vim.api.nvim_get_current_buf()
-  vim.bo[buf].buftype = "nofile"
+  vim.cmd(split == "tab" and "tab split" or split == "horizontal" and "rightbelow split" or "rightbelow vsplit")
+  win = vim.api.nvim_get_current_win()
+  local buf = vim.api.nvim_create_buf(false, true)
   vim.bo[buf].bufhidden = "wipe"
-  vim.bo[buf].swapfile = false
-  vim.bo[buf].filetype = "json"
-  pcall(vim.api.nvim_buf_set_name, buf, title)
+  vim.api.nvim_win_set_buf(win, buf)
+  pcall(vim.api.nvim_buf_set_name, buf, "jwt://decoded")
   vim.keymap.set("n", "q", "<cmd>close<cr>", { buffer = buf, desc = "Close JWT view" })
+  vim.keymap.set("n", "r", function()
+    if last_request then
+      M.decode(last_request.token, last_request.opts)
+    end
+  end, { buffer = buf, desc = "Render JWT view again for the window width" })
   vim.api.nvim_create_autocmd("BufWipeout", {
     buffer = buf,
     once = true,
@@ -114,32 +228,31 @@ local function open_window(title)
     end,
   })
   result_buf = buf
-  return buf, vim.api.nvim_get_current_win()
+  local wo = vim.wo[win]
+  wo.wrap, wo.list, wo.number, wo.relativenumber, wo.signcolumn, wo.foldcolumn = false, false, false, false, "no", "0"
+  return buf, win
 end
 
-local function render(stdout, stderr, verify)
-  local ok, result = pcall(vim.json.decode, stdout, { luanil = { object = true, array = true } })
-  if not ok or type(result) ~= "table" then
-    local msg = vim.trim(stderr ~= "" and stderr or stdout)
-    vim.notify("vc-jwt-decoder: " .. (msg ~= "" and msg or "no output"), vim.log.levels.ERROR)
-    return
+local function show(stdout, stderr)
+  local lines, highlights = M.parse_ansi(stdout)
+  if vim.trim(stderr) ~= "" then -- e.g. the steps of a failed signature check
+    local extra, extra_hl = M.parse_ansi(stderr)
+    local offset = #lines + 1
+    lines[#lines + 1] = ""
+    vim.list_extend(lines, extra)
+    for _, h in ipairs(extra_hl) do
+      highlights[#highlights + 1] = { h[1] + offset, h[2], h[3], h[4] }
+    end
   end
-  if result.error then
-    vim.notify("vc-jwt-decoder: " .. result.error, vim.log.levels.ERROR)
-    return
-  end
-  local buf, win = open_window("jwt://decoded")
-  local lines = vim.split(vim.trim(stdout), "\n")
+  local buf, win = open_window()
   vim.bo[buf].modifiable = true
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
   vim.bo[buf].modifiable = false
   vim.api.nvim_buf_clear_namespace(buf, ns, 0, -1)
-  if M.config.timestamps then
-    annotate_timestamps(buf, lines)
+  for _, h in ipairs(highlights) do
+    vim.api.nvim_buf_set_extmark(buf, ns, h[1], h[2], { end_col = h[3], hl_group = h[4] })
   end
-  vim.wo[win].winbar = winbar_text(result, verify)
-  vim.wo[win].foldmethod = "indent"
-  vim.wo[win].foldlevel = 3
+  vim.api.nvim_win_set_cursor(win, { 1, 0 })
 end
 
 --- Decode a token and show the result in a split.
@@ -157,7 +270,8 @@ function M.decode(token, opts)
     vim.notify(err, vim.log.levels.ERROR)
     return
   end
-  local args = vim.list_extend(vim.deepcopy(cmd), { "--json" })
+  last_request = { token = token, opts = opts }
+  local args = vim.deepcopy(cmd)
   local verify = opts.verify
   if verify == nil then
     verify = M.config.verify
@@ -165,9 +279,18 @@ function M.decode(token, opts)
   if not verify then
     args[#args + 1] = "--no-verify"
   end
-  local ok, spawn_err = pcall(vim.system, args, { stdin = token, text = true }, function(r)
+  -- Make the CLI (rich) print colors and fit its panels to the result window.
+  local env = { FORCE_COLOR = "1", COLORTERM = "truecolor", COLUMNS = tostring(result_width()) }
+  local ok, spawn_err = pcall(vim.system, args, { stdin = token, text = true, env = env }, function(r)
     vim.schedule(function()
-      render(r.stdout or "", r.stderr or "", verify)
+      local stdout, stderr = r.stdout or "", r.stderr or ""
+      if r.code ~= 0 or vim.trim(stdout) == "" then
+        local msg = vim.trim(table.concat((M.parse_ansi(stderr ~= "" and stderr or stdout)), " "))
+        msg = msg:gsub("^Error decoding JWT: ", "")
+        vim.notify("vc-jwt-decoder: " .. (msg ~= "" and msg or "no output"), vim.log.levels.ERROR)
+        return
+      end
+      show(stdout, stderr)
     end)
   end)
   if not ok then
@@ -208,7 +331,7 @@ function M.decode_cursor(opts)
   M.decode(vim.fn.expand("<cWORD>"), opts)
 end
 
----@param opts? VcJwtDecoderConfig
+---@param opts? VcJwtDecoderConfig|table  any subset of the defaults
 function M.setup(opts)
   M.config = vim.tbl_deep_extend("force", vim.deepcopy(M.defaults), opts or {})
 end

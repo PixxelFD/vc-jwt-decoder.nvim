@@ -36,20 +36,22 @@ No mappings are set by default.
     vim.keymap.set("n", "<leader>jd", "<Plug>(JwtDecodeCursor)")
     vim.keymap.set("x", "<leader>jd", "<Plug>(JwtDecodeSelection)")
 <
-In the result buffer, `q` closes the window.
+In the result buffer, `q` closes the window and `r` lays the panels out
+again for the current window width.
 
 ==============================================================================
 RESULT VIEW                                        *vc-jwt-decoder-view*
 
-The result is the CLI's `--json` output in a read-only `json` buffer. The
-|winbar| shows the signature status of the token and of each enveloped VC:
+The result opens beside the current window and shows the CLI's formatted
+output: a panel each for the header and payload, with the signature status
+and key details in the payload panel's title, and the same for every
+enveloped VC. When a signature check fails, its steps follow the panels.
 
-    ✓ signature verified          key resolved, signature valid
-    ✗ signature INVALID           key resolved, signature does not match
-    ? signature not verified      no key could be resolved
-    signature: not checked        verification skipped (|:JwtDecode| with !)
-
-`iat`, `nbf`, `exp` and `auth_time` get their UTC date as virtual text.
+It is a normal read-only buffer: the CLI's colors become highlights and its
+background colors are dropped, so the colorscheme's background shows through.
+The panels are laid out for the window width at the time they open; resizing
+the window does not change them. Press `r` to run the CLI again for the
+current width, `q` to close the window.
 
 ==============================================================================
 CONFIGURATION                                     *vc-jwt-decoder-config*
@@ -59,7 +61,6 @@ CONFIGURATION                                     *vc-jwt-decoder-config*
       verify = true,       -- verify signatures
       auto_open = true,    -- decode *.jwt files on open
       split = "vertical",  -- "vertical" | "horizontal" | "tab"
-      timestamps = true,   -- annotate iat/nbf/exp
     })
 <
 Calling setup() is optional.
