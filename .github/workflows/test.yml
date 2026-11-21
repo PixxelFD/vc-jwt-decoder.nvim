@@ -1,0 +1,27 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        neovim: [v0.10.4, stable]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: ${{ matrix.neovim }}
+      - uses: astral-sh/setup-uv@v6
+      - name: Install the vc-jwt-decoder CLI
+        run: |
+          uv tool install 'vc-jwt-decoder[cli]'
+          uv tool dir --bin >> "$GITHUB_PATH"
+      - name: Run tests
+        run: nvim --headless -u NONE -l tests/run.lua
