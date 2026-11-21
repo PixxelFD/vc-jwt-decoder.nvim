@@ -1,0 +1,77 @@
+*vc-jwt-decoder.txt*  Decode and verify JWTs and Verifiable Credential JWTs
+
+==============================================================================
+CONTENTS                                              *vc-jwt-decoder*
+
+Decodes JWT / VC-JWT / VP-JWT tokens with the `vc-jwt-decoder` Python CLI and
+shows header, payload, enveloped VCs and signature status in a split.
+
+Requirements: Neovim 0.10+, and the CLI:
+>sh
+    uv tool install 'vc-jwt-decoder[cli]'
+<
+Without it, `uvx` is used if available. Check with |:checkhealth|.
+
+==============================================================================
+COMMANDS                                         *vc-jwt-decoder-commands*
+
+                                                              *:JwtDecode*
+:[range]JwtDecode[!] [{token}]
+    Decode {token}, or the lines in [range] (default: whole buffer).
+    With [!] the signature is not verified (no network access).
+
+                                                        *:JwtDecodeCursor*
+:JwtDecodeCursor[!]
+    Decode the token under the cursor. Surrounding quotes, commas and a
+    "Bearer" prefix are ignored.
+
+==============================================================================
+MAPPINGS                                         *vc-jwt-decoder-mappings*
+
+No mappings are set by default.
+
+<Plug>(JwtDecodeCursor)       Normal mode: decode token under cursor.
+<Plug>(JwtDecodeSelection)    Visual mode: decode the selection.
+>lua
+    vim.keymap.set("n", "<leader>jd", "<Plug>(JwtDecodeCursor)")
+    vim.keymap.set("x", "<leader>jd", "<Plug>(JwtDecodeSelection)")
+<
+In the result buffer, `q` closes the window.
+
+==============================================================================
+RESULT VIEW                                        *vc-jwt-decoder-view*
+
+The result is the CLI's `--json` output in a read-only `json` buffer. The
+|winbar| shows the signature status of the token and of each enveloped VC:
+
+    ✓ signature verified          key resolved, signature valid
+    ✗ signature INVALID           key resolved, signature does not match
+    ? signature not verified      no key could be resolved
+    signature: not checked        verification skipped (|:JwtDecode| with !)
+
+`iat`, `nbf`, `exp` and `auth_time` get their UTC date as virtual text.
+
+==============================================================================
+CONFIGURATION                                     *vc-jwt-decoder-config*
+>lua
+    require("vc-jwt-decoder").setup({
+      cmd = nil,           -- command list; nil = auto-detect
+      verify = true,       -- verify signatures
+      auto_open = true,    -- decode *.jwt files on open
+      split = "vertical",  -- "vertical" | "horizontal" | "tab"
+      timestamps = true,   -- annotate iat/nbf/exp
+    })
+<
+Calling setup() is optional.
+
+==============================================================================
+LUA API                                              *vc-jwt-decoder-api*
+
+require("vc-jwt-decoder").decode({token}, {opts})
+require("vc-jwt-decoder").decode_range({line1}, {line2}, {opts})
+require("vc-jwt-decoder").decode_cursor({opts})
+require("vc-jwt-decoder").decode_selection({opts})
+
+{opts} is an optional table: `{ verify = boolean }`.
+
+ vim:tw=78:ts=8:ft=help:norl:
