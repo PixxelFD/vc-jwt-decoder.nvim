@@ -4,6 +4,13 @@
 ---@field auto_open boolean  Decode automatically when a *.jwt file is opened
 ---@field split "vertical"|"horizontal"|"tab"
 
+--- Options for `setup()`: any subset of `VcJwtDecoderConfig`.
+---@class VcJwtDecoderOpts
+---@field cmd? string[]
+---@field verify? boolean
+---@field auto_open? boolean
+---@field split? "vertical"|"horizontal"|"tab"
+
 local M = {}
 
 ---@type VcJwtDecoderConfig
@@ -331,7 +338,7 @@ function M.decode_cursor(opts)
   M.decode(vim.fn.expand("<cWORD>"), opts)
 end
 
----@param opts? VcJwtDecoderConfig|table  any subset of the defaults
+---@param opts? VcJwtDecoderOpts
 function M.setup(opts)
   M.config = vim.tbl_deep_extend("force", vim.deepcopy(M.defaults), opts or {})
 end
