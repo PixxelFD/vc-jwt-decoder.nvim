@@ -27,13 +27,16 @@ Run `:checkhealth vc-jwt-decoder` to confirm the setup works.
 
 ## Installation
 
+The plugin loads its Lua module only when you decode something, so there is no
+need to lazy-load it. It also registers the `jwt` filetype, so lazy-loading on
+`ft = "jwt"` would never trigger.
+
 [lazy.nvim](https://github.com/folke/lazy.nvim):
 
 ```lua
 {
-  "riphixel/vc-jwt-decoder.nvim", -- adjust to wherever you host it
-  ft = "jwt",
-  cmd = { "JwtDecode", "JwtDecodeCursor" },
+  "PixxelFD/vc-jwt-decoder.nvim",
+  lazy = false,
   keys = {
     { "<leader>jd", "<Plug>(JwtDecodeCursor)", desc = "Decode JWT under cursor" },
     { "<leader>jd", "<Plug>(JwtDecodeSelection)", mode = "x", desc = "Decode selected JWT" },
@@ -42,7 +45,16 @@ Run `:checkhealth vc-jwt-decoder` to confirm the setup works.
 }
 ```
 
-From a local checkout: `{ dir = "~/Code/vc-jwt-decoder.nvim", ... }`.
+[vim.pack](https://neovim.io/doc/user/pack.html#vim.pack) (Neovim 0.12+):
+
+```lua
+vim.pack.add({ "https://github.com/PixxelFD/vc-jwt-decoder.nvim" })
+require("vc-jwt-decoder").setup({})
+vim.keymap.set("n", "<leader>jd", "<Plug>(JwtDecodeCursor)", { desc = "Decode JWT under cursor" })
+vim.keymap.set("x", "<leader>jd", "<Plug>(JwtDecodeSelection)", { desc = "Decode selected JWT" })
+```
+
+From a local checkout with lazy.nvim: `{ dir = "~/Code/vc-jwt-decoder.nvim", ... }`.
 
 ## Usage
 
@@ -78,6 +90,7 @@ nvim --headless -u NONE -l tests/run.lua
 ```
 
 The tests run the real CLI. Signature checks use an offline did:key token.
+GitHub Actions runs them on every push and pull request, with Neovim 0.10 and the latest stable release.
 
 ## License
 
