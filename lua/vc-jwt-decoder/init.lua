@@ -98,7 +98,7 @@ local function open_window(title)
     return result_buf, win
   end
   local split = M.config.split
-  vim.cmd(split == "tab" and "tabnew" or split == "horizontal" and "botright new" or "botright vnew")
+  vim.cmd(split == "tab" and "tabnew" or split == "horizontal" and "rightbelow new" or "rightbelow vnew")
   local buf = vim.api.nvim_get_current_buf()
   vim.bo[buf].buftype = "nofile"
   vim.bo[buf].bufhidden = "wipe"
